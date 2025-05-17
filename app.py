@@ -1,11 +1,13 @@
-from flask import Flask, render_template, request
-import requests, uuid
+
+import os
+from flask import Flask, request, jsonify
+import uuid
+import requests
 
 app = Flask(__name__)
 
-# Replace these with your real production values
-ACCESS_TOKEN = "REPLACE_WITH_YOUR_PRODUCTION_ACCESS_TOKEN"
-LOCATION_ID = "REPLACE_WITH_YOUR_PRODUCTION_LOCATION_ID"
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+LOCATION_ID = os.getenv("LOCATION_ID")
 BASE_URL = "https://connect.squareup.com"
 
 HEADERS = {
@@ -14,63 +16,100 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-@app.route("/", methods=["GET", "POST"])
-def home():
-    message = ""
-    if request.method == "POST":
-        amount = request.form.get("amount")
-        try:
-            cents = int(float(amount) * 100)
-            order_id = create_order(cents)
-            if order_id:
-                result = record_payment(order_id, cents)
-                if result:
-                    message = f"✅ Successfully logged ${amount} to Square"
-                else:
-                    message = "❌ Error logging payment to Square"
-            else:
-                message = "❌ Error creating order"
-        except:
-            message = "❌ Invalid amount entered"
-    return render_template("index.html", message=message)
+@app.route("/")
+def index():
+    return "Gift Card Manager is running."
 
-def create_order(amount_cents):
-    url = f"{BASE_URL}/v2/orders"
-    body = {
-        "order": {
-            "location_id": LOCATION_ID,
-            "line_items": [{
-                "name": "External Gift Card Redemption",
-                "quantity": "1",
-                "base_price_money": {
-                    "amount": amount_cents,
-                    "currency": "USD"
-                }
-            }]
-        },
-        "idempotency_key": str(uuid.uuid4())
-    }
-    res = requests.post(url, headers=HEADERS, json=body).json()
-    return res.get("order", {}).get("id")
+@app.route("/create", methods=["POST"])
+def create_card():
+    try:
+        amount_dollars = float(request.json.get("amount"))
+        amount_cents = int(amount_dollars * 100)
+    except:
+        return jsonify({"error": "Invalid amount"}), 400
 
-def record_payment(order_id, amount_cents):
-    url = f"{BASE_URL}/v2/payments"
-    body = {
-        "source_id": "EXTERNAL",
+    create_url = f"{BASE_URL}/v2/gift-cards"
+    create_body = {
         "idempotency_key": str(uuid.uuid4()),
-        "amount_money": {
-            "amount": amount_cents,
-            "currency": "USD"
-        },
-        "order_id": order_id,
+        "location_id": LOCATION_ID
+    }
+    res = requests.post(create_url, headers=HEADERS, json=create_body)
+    if res.status_code != 200:
+        return jsonify({"error": "Failed to create gift card", "details": res.json()}), 400
+
+    gift_card = res.json()["gift_card"]
+    gift_card_id = gift_card["id"]
+    gan = gift_card["gan"]
+
+    load_url = f"{BASE_URL}/v2/gift-cards/activities"
+    load_body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "gift_card_id": gift_card_id,
         "location_id": LOCATION_ID,
-        "external_details": {
-            "type": "OTHER_GIFT_CARD",
-            "source": "External Gift Card"
+        "type": "ACTIVATE",
+        "activate_activity_details": {
+            "amount_money": {
+                "amount": amount_cents,
+                "currency": "USD"
+            }
         }
     }
-    res = requests.post(url, headers=HEADERS, json=body).json()
-    return "payment" in res
+    load_res = requests.post(load_url, headers=HEADERS, json=load_body)
+    if load_res.status_code != 200:
+        return jsonify({"error": "Failed to load gift card", "details": load_res.json()}), 400
+
+    return jsonify({"success": True, "gan": gan, "amount": amount_dollars})
+
+@app.route("/balance", methods=["POST"])
+def check_balance():
+    gan = request.json.get("gan")
+    if not gan:
+        return jsonify({"error": "Missing card number"}), 400
+
+    search_url = f"{BASE_URL}/v2/gift-cards/from-gan"
+    res = requests.post(search_url, headers=HEADERS, json={"gan": gan})
+    if res.status_code != 200:
+        return jsonify({"error": "Failed to find card", "details": res.json()}), 400
+
+    gift_card_id = res.json()["gift_card"]["id"]
+    card_url = f"{BASE_URL}/v2/gift-cards/{gift_card_id}"
+    balance_res = requests.get(card_url, headers=HEADERS)
+    if balance_res.status_code != 200:
+        return jsonify({"error": "Failed to retrieve balance", "details": balance_res.json()}), 400
+
+    balance = balance_res.json()["gift_card"]["balance_money"]["amount"] / 100
+    return jsonify({"balance": balance})
+
+@app.route("/redeem", methods=["POST"])
+def redeem_card():
+    gan = request.json.get("gan")
+    amount_dollars = float(request.json.get("amount", 0))
+    amount_cents = int(amount_dollars * 100)
+
+    search_url = f"{BASE_URL}/v2/gift-cards/from-gan"
+    res = requests.post(search_url, headers=HEADERS, json={"gan": gan})
+    if res.status_code != 200:
+        return jsonify({"error": "Card not found", "details": res.json()}), 400
+
+    gift_card_id = res.json()["gift_card"]["id"]
+    redeem_url = f"{BASE_URL}/v2/gift-cards/activities"
+    redeem_body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "gift_card_id": gift_card_id,
+        "location_id": LOCATION_ID,
+        "type": "REDEEM",
+        "redeem_activity_details": {
+            "amount_money": {
+                "amount": amount_cents,
+                "currency": "USD"
+            }
+        }
+    }
+    redeem_res = requests.post(redeem_url, headers=HEADERS, json=redeem_body)
+    if redeem_res.status_code != 200:
+        return jsonify({"error": "Redemption failed", "details": redeem_res.json()}), 400
+
+    return jsonify({"success": True, "redeemed": amount_dollars})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
