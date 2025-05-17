@@ -1,11 +1,53 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
     <title>Gift Card Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f9f9f9;
+        }
+        h1 { color: #2b2b2b; }
+        form { margin-bottom: 20px; padding: 10px; background: #fff; border-radius: 10px; }
+        input, button {
+            padding: 10px;
+            margin: 5px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
 </head>
 <body>
     <h1>Gift Card Manager</h1>
-    <p>This is your deployed gift card handler interface.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <p class="{{ category }}">{{ message }}</p>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="/create">
+        <h3>Create Gift Card</h3>
+        Amount: <input type="number" name="amount" step="0.01" required>
+        <button type="submit">Create</button>
+    </form>
+
+    <form method="POST" action="/check">
+        <h3>Check Balance</h3>
+        Card Number (GAN): <input type="text" name="check_gan" required>
+        <button type="submit">Check</button>
+    </form>
+
+    <form method="POST" action="/redeem">
+        <h3>Redeem Card</h3>
+        Card Number (GAN): <input type="text" name="redeem_gan" required>
+        Amount: <input type="number" name="redeem_amount" step="0.01" required>
+        <button type="submit">Redeem</button>
+    </form>
 </body>
 </html>
